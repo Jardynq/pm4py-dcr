@@ -26,7 +26,7 @@ from pm4py.objects.log.obj import EventLog
 from pm4py.objects.log.obj import Trace, Event
 from pm4py.util import exec_utils, constants, xes_constants
 
-from pm4py.objects.dcr.semantics import DCRSemantics
+from pm4py.objects.dcr.semantics import DcrSemantics
 
 
 class Parameters(Enum):
@@ -39,18 +39,18 @@ class Parameters(Enum):
 
 
 def choose_next_activity(dcr):
-    enabled = DCRSemantics().enabled(dcr)
+    enabled = DcrSemantics().enabled(dcr)
     if tuple(enabled) == ():
         return dcr, None
     next_activity = random.choice(tuple(enabled))
-    dcr = DCRSemantics().execute(dcr, next_activity)
+    dcr = DcrSemantics().execute(dcr, next_activity)
     return dcr, next_activity
 
 
 def generate_random_trace(dcr, min_trace_length, max_trace_length, start_time, max_execution_time):
     final_trace = []
     while True:
-        if DCRSemantics.is_accepting(dcr):
+        if DcrSemantics.is_accepting(dcr):
             if len(final_trace) >= min_trace_length:
                 break
         if len(final_trace) >= max_trace_length:
