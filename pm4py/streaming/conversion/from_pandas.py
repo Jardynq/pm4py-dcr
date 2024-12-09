@@ -39,19 +39,24 @@ class PandasDataframeAsIterable(object):
 
         case_id_key = exec_utils.get_param_value(Parameters.CASE_ID_KEY, parameters, constants.CASE_CONCEPT_NAME)
         activity_key = exec_utils.get_param_value(Parameters.ACTIVITY_KEY, parameters, xes_constants.DEFAULT_NAME_KEY)
-        timestamp_key = exec_utils.get_param_value(Parameters.TIMESTAMP_KEY, parameters,
-                                                   xes_constants.DEFAULT_TIMESTAMP_KEY)
+        timestamp_key = exec_utils.get_param_value(Parameters.TIMESTAMP_KEY, parameters, None)
         index_key = exec_utils.get_param_value(Parameters.INDEX_KEY, parameters, constants.DEFAULT_INDEX_KEY)
 
         if not (hasattr(dataframe, "attrs") and dataframe.attrs):
             # dataframe has not been initialized through format_dataframe
             dataframe = pandas_utils.insert_index(dataframe, index_key)
-            dataframe.sort_values([case_id_key, timestamp_key, index_key])
+            if timestamp_key is not None:
+                dataframe.sort_values([case_id_key, timestamp_key, index_key])
+            else:
+                dataframe.sort_values([case_id_key, index_key])
 
         cases = dataframe[case_id_key].to_numpy()
 
         self.activities = dataframe[activity_key].to_numpy()
-        self.timestamps = dataframe[timestamp_key].to_numpy()
+        if timestamp_key is not None:
+            self.timestamps = dataframe[timestamp_key].to_numpy()
+        else:
+            self.timestamps = None
         self.c_unq, self.c_ind, self.c_counts = np.unique(cases, return_index=True, return_counts=True)
         self.no_traces = len(self.c_ind)
         self.i = 0
@@ -63,8 +68,12 @@ class PandasDataframeAsIterable(object):
             ei = si + self.c_counts[self.i]
             trace = Trace(attributes={xes_constants.DEFAULT_TRACEID_KEY: case_id})
             for j in range(si, ei):
-                event = Event({xes_constants.DEFAULT_NAME_KEY: self.activities[j],
-                               xes_constants.DEFAULT_TIMESTAMP_KEY: self.timestamps[j]})
+                if self.timestamps is not None:
+                    event = Event({xes_constants.DEFAULT_NAME_KEY: self.activities[j],
+                                   xes_constants.DEFAULT_TIMESTAMP_KEY: self.timestamps[j]})
+                else:
+                    event = Event({xes_constants.DEFAULT_NAME_KEY: self.activities[j]})
+
                 trace.append(event)
             self.i = self.i + 1
             return trace
