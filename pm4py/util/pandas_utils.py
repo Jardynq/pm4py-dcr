@@ -365,9 +365,6 @@ def check_pandas_dataframe_columns(df, activity_key=None, case_id_key=None, time
     if len(str_columns) < 2:
         raise Exception("the dataframe should (at least) contain a column of type string for the case identifier and a column of type string for the activity.")
 
-    if len(timest_columns) < 1:
-        raise Exception("the dataframe should (at least) contain a column of type date")
-
     if case_id_key is not None:
         if case_id_key not in df.columns:
             raise Exception("the specified case ID column is not contained in the dataframe. Available columns: "+str(sorted(list(df.columns))))
