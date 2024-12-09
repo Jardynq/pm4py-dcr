@@ -920,3 +920,58 @@ def discover_dcr(log: Union[EventLog, pd.DataFrame], post_process: Set[str] = No
     from pm4py.algo.discovery.dcr_discover.variants import dcr_discover
     return dcr_alg.apply(log, dcr_discover, post_process=post_process,
                          findAdditionalConditions=finaAdditionalConditions, parameters=properties)
+
+
+
+def discover_dcr_rejection(log: Union[EventLog, pd.DataFrame], post_process: Set[str] = None, activity_key: str = "concept:name",
+                 timestamp_key: str = "time:timestamp", case_id_key: str = "case:concept:name",
+                 resource_key: str = "org:resource", group_key: str = "org:group",
+                 finaAdditionalConditions: bool = True, **kwargs) -> Tuple[Any, Dict[str, Any]]:
+    """
+    Discovers a DCR graph from an event log based on the DisCoveR algorithm.
+    This method implements the DCR discovery algorithm as described in:
+    C. O. Back, T. Slaats, T. T. Hildebrandt, M. Marquard, "DisCoveR: accurate and efficient discovery of declarative process models".
+    Parameters
+    ----------
+    log : Union[EventLog, pd.DataFrame]
+        The event log or Pandas dataframe containing the event data.
+    post_process : Optional[str]
+        Specifies the type of post-processing for the event log, currently supports ROLES, PENDING, TIMED and NESTINGS.
+    activity_key : str, optional
+        The attribute to be used for the activity, defaults to "concept:name".
+    timestamp_key : str, optional
+        The attribute to be used for the timestamp, defaults to "time:timestamp".
+    case_id_key : str, optional
+        The attribute to be used as the case identifier, defaults to "case:concept:name".
+    group_key : str, optional
+        The attribute to be used as a role identifier, defaults to "org:group".
+    resource_key : str, optional
+        The attribute to be used as a resource identifier, defaults to "org:resource".
+    findAdditionalConditions : bool, optional
+        A boolean value specifying whether additional conditions should be found, defaults to True.
+    Returns
+    -------
+    Tuple[Any, dict]
+        A tuple containing the discovered DCR graph and a dictionary with additional information.
+    Examples
+    --------
+    .. code-block:: python3
+        import pm4py
+        graph, la = pm4py.discover_DCR(log)
+    """
+    if type(log) not in [pd.DataFrame, EventLog, EventStream]:
+        raise Exception(
+            "the method can be applied only to a traditional event log!")
+    __event_log_deprecation_warning(log)
+    if check_is_pandas_dataframe(log):
+        check_pandas_dataframe_columns(log, activity_key=activity_key, case_id_key=case_id_key,
+                                       timestamp_key=timestamp_key)
+    properties = get_properties(
+        log, activity_key=activity_key, case_id_key=case_id_key, timestamp_key=timestamp_key,
+        resource_key=resource_key, group_key=group_key)
+    properties = {**properties, **kwargs}
+
+    from pm4py.algo.discovery.dcr_rejection import algorithm as dcr_alg
+    from pm4py.algo.discovery.dcr_rejection.variants import dcr_rejection
+    return dcr_alg.apply(log, dcr_rejection, post_process=post_process,
+                         findAdditionalConditions=finaAdditionalConditions, parameters=properties)
