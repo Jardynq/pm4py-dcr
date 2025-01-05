@@ -152,7 +152,9 @@ class RuleBasedConformance:
 
             # compute the conformance for the trace
             ret[Outputs.NO_DEV_TOTAL.value] = len(ret[Outputs.DEVIATIONS.value])
-            ret[Outputs.FITNESS.value] = 1 - ret[Outputs.NO_DEV_TOTAL.value] / ret[Outputs.NO_CONSTR_TOTAL.value]
+            divisor = ret[Outputs.NO_CONSTR_TOTAL.value]
+            divisor = divisor if divisor != 0 else 1
+            ret[Outputs.FITNESS.value] = 1 - ret[Outputs.NO_DEV_TOTAL.value] / divisor
             ret[Outputs.IS_FIT.value] = ret[Outputs.NO_DEV_TOTAL.value] == 0
             conf_case.append(ret)
 
