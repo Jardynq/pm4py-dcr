@@ -38,6 +38,7 @@ from pm4py.objects.log.obj import EventLog
 from pm4py.objects.log.obj import EventStream
 from pm4py.objects.petri_net.obj import PetriNet, Marking
 from pm4py.objects.process_tree.obj import ProcessTree
+from pm4py.objects.dcr.obj import DcrGraph
 from pm4py.util.pandas_utils import check_is_pandas_dataframe, check_pandas_dataframe_columns
 from pm4py.utils import get_properties, __event_log_deprecation_warning
 from pm4py.util import constants, pandas_utils
@@ -902,7 +903,7 @@ def discover_dcr(log: Union[EventLog, pd.DataFrame], post_process: Set[str] = No
     --------
     .. code-block:: python3
         import pm4py
-        graph, la = pm4py.discover_DCR(log)
+        graph, la = pm4py.discover_dcr(log)
     """
     if type(log) not in [pd.DataFrame, EventLog, EventStream]:
         raise Exception(
@@ -923,55 +924,54 @@ def discover_dcr(log: Union[EventLog, pd.DataFrame], post_process: Set[str] = No
 
 
 
-def discover_dcr_rejection(log: Union[EventLog, pd.DataFrame], post_process: Set[str] = None, activity_key: str = "concept:name",
-                 timestamp_key: str = "time:timestamp", case_id_key: str = "case:concept:name",
-                 resource_key: str = "org:resource", group_key: str = "org:group",
-                 finaAdditionalConditions: bool = True, **kwargs) -> Tuple[Any, Dict[str, Any]]:
+def discover_dcr_rejection(log: pd.DataFrame, 
+                           positive_label,
+                           negative_label,
+                           activity_key: str = "concept:name",
+                           case_id_key: str = "case:concept:name", 
+                           label_key: str = "case:label", 
+                           seed: any = None, 
+                           **kwargs
+                           ) -> DcrGraph:
     """
-    Discovers a DCR graph from an event log based on the DisCoveR algorithm.
-    This method implements the DCR discovery algorithm as described in:
-    C. O. Back, T. Slaats, T. T. Hildebrandt, M. Marquard, "DisCoveR: accurate and efficient discovery of declarative process models".
+    Discovers a DCR graph model from an event log, using DCR rejection mining algorithm described in [1]_.
+
     Parameters
     ----------
-    log : Union[EventLog, pd.DataFrame]
-        The event log or Pandas dataframe containing the event data.
-    post_process : Optional[str]
-        Specifies the type of post-processing for the event log, currently supports ROLES, PENDING, TIMED and NESTINGS.
-    activity_key : str, optional
-        The attribute to be used for the activity, defaults to "concept:name".
-    timestamp_key : str, optional
-        The attribute to be used for the timestamp, defaults to "time:timestamp".
-    case_id_key : str, optional
-        The attribute to be used as the case identifier, defaults to "case:concept:name".
-    group_key : str, optional
-        The attribute to be used as a role identifier, defaults to "org:group".
-    resource_key : str, optional
-        The attribute to be used as a resource identifier, defaults to "org:resource".
-    findAdditionalConditions : bool, optional
-        A boolean value specifying whether additional conditions should be found, defaults to True.
+    log: pd.DataFrame
+        event log as a pandas dataframe
+    parameters
+        Possible parameters of the algorithm, including:
+        - 'activity_key' 
+        - 'case_id_key' 
+        - 'label_key' 
+        - 'positive_label'
+        - 'negative_label'
+        - 'seed'
     Returns
     -------
-    Tuple[Any, dict]
-        A tuple containing the discovered DCR graph and a dictionary with additional information.
-    Examples
-    --------
-    .. code-block:: python3
-        import pm4py
-        graph, la = pm4py.discover_DCR(log)
+    DcrGraph
+        returns the DcrGraph mined from the log
+
+    References
+    ----------
+    .. [1]
+        T. Slaats, S. Debois, C. O. Back, and A. K. F. Christfort, "Foundations and practice of binary process discovery: The Rejection Miner", 
+        Information Systems, vol. 121, 2024, Art. no. 102339. DOI: <https://doi.org/10.1016/j.is.2023.102339​>_.
     """
-    if type(log) not in [pd.DataFrame, EventLog, EventStream]:
-        raise Exception(
-            "the method can be applied only to a traditional event log!")
-    __event_log_deprecation_warning(log)
-    if check_is_pandas_dataframe(log):
-        check_pandas_dataframe_columns(log, activity_key=activity_key, case_id_key=case_id_key,
-                                       timestamp_key=timestamp_key)
-    properties = get_properties(
-        log, activity_key=activity_key, case_id_key=case_id_key, timestamp_key=timestamp_key,
-        resource_key=resource_key, group_key=group_key)
-    properties = {**properties, **kwargs}
+    if type(log) is not pd.DataFrame:
+        raise Exception("This method can be applied only to a dataframe event log!")
+
+    properties = {
+        'activity_key': activity_key, 
+        'case_id_key': case_id_key, 
+        'label_key': label_key, 
+        'positive_label': positive_label,
+        'negative_label': negative_label,
+        'seed': seed,
+        **kwargs
+    }
 
     from pm4py.algo.discovery.dcr_rejection import algorithm as dcr_alg
     from pm4py.algo.discovery.dcr_rejection.variants import dcr_rejection
-    return dcr_alg.apply(log, dcr_rejection, post_process=post_process,
-                         findAdditionalConditions=finaAdditionalConditions, parameters=properties)
+    return dcr_alg.apply(log, dcr_rejection, parameters=properties)

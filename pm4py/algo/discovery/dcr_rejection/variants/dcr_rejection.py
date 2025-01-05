@@ -1,107 +1,59 @@
 from copy import deepcopy
-
-import numpy as np
+import random
+from enum import Enum
 import pandas as pd
 
-import pm4py.utils
 from pm4py.stats import get_event_attribute_values
 from pm4py.objects.dcr.obj import dcr_template
-from enum import Enum
-from typing import Tuple, Dict, Set, Any, List, Union
-from pm4py.util import exec_utils, constants, xes_constants
-from pm4py.objects.log.obj import EventLog
 from pm4py.objects.dcr.obj import DcrGraph
 
 
-# these parameters are used in case of attribute has a custom name, in which case it can be specified on call
-class Parameters(Enum):
-    """
-    An enumeration class to hold parameter keys used for specifying the activity and case identifier keys
-    within a log during the DCR discovery process.
-
-    Attributes
-    ----------
-    ACTIVITY_KEY : str
-        The key used to identify the activity attribute in the event log.
-    CASE_ID_KEY : str
-        The key used to identify the case identifier attribute in the event log.
-    """
-    ACTIVITY_KEY = constants.PARAMETER_CONSTANT_ACTIVITY_KEY
-    CASE_ID_KEY = constants.PARAMETER_CONSTANT_CASEID_KEY
+class MinimizeObjective(Enum):
+    Naive = 1,
+    Greedy = 2,
 
 
-def apply(log, findAdditionalConditions=True, parameters = None) -> Tuple[DcrGraph,Dict[str, Any]]:
+def apply(log, parameters = None) -> DcrGraph:
     """
-    Discovers a DCR graph model from an event log, using algorithm described in [1]_.
+    Discovers a DCR graph model from an event log, using DCR rejection mining algorithm described in [1]_.
 
     Parameters
     ----------
-    log
-        event log (pandas dataframe)
-    findAdditionalConditions
-        bool value to identify if additional conditions should be mined
+    log: pd.DataFrame
+        event log as a pandas dataframe
     parameters
         Possible parameters of the algorithm, including:
-        - Parameters.ACTIVITY_KEY
-        - Parameters.Case_ID_KEY
+        - 'activity_key' 
+        - 'case_id_key' 
+        - 'label_key' 
+        - 'positive_label'
+        - 'negative_label'
+        - 'seed'
     Returns
     -------
-    tuple(dict,dict)
-        returns tuple of dictionaries containing the dcr_graph and the abstracted log used to mine the graph
+    DcrGraph
+        returns the DcrGraph mined from the log
 
     References
     ----------
     .. [1]
-        C. O. Back et al., "DisCoveR: accurate and efficient discovery of declarative process models",
-        International Journal on Software Tools for Technology Transfer, 2022, 24:563–587. 'DOI' <https://doi.org/10.1007/s10009-021-00616-0>_.
-
+        T. Slaats, S. Debois, C. O. Back, and A. K. F. Christfort, "Foundations and practice of binary process discovery: The Rejection Miner", 
+        Information Systems, vol. 121, 2024, Art. no. 102339. DOI: <https://doi.org/10.1016/j.is.2023.102339​>_.
     """
     disc = Rejection()
-    return disc.mine(log, findAdditionalConditions, parameters = parameters)
+    return disc.mine(log, parameters = parameters)
 
 
 class Rejection:
-    """
-    The Discover class is responsible for mining DCR graphs from event logs.
-
-    Attributes
-    ----------
-    graph : dict
-        A dictionary representing the DCR graph, initialized from a template.
-    logAbstraction : dict
-        A dictionary containing abstracted information from the event log to be mined.
-
-    Methods
-    ----------
-    mine(log: Union[EventLog, pd.DataFrame], findAdditionalConditions: bool = True, parameters: Optional[dict] = None) -> Tuple[DCR_Graph, Dict[str, Any]]:
-        Mines a DCR graph and the log abstraction from an event log.
-
-    createLogAbstraction(log: Union[EventLog, pd.DataFrame], activity_key: str, case_key: str) -> int:
-        Creates an abstraction of the event log to facilitate the mining process.
-
-    parseTrace(trace: List[str]) -> int:
-        Parses a single trace to extract relations between events.
-
-    optimizeRelation(relation: Dict[str, Set[str]]) -> Dict[str, Set[str]]:
-        Optimizes a relation by removing redundant relations based on transitive closure.
-
-    mineFromAbstraction(findAdditionalConditions: bool = True) -> int:
-        Mines DCR constraints from the log abstraction.
-    """
     def __init__(self):
         self.graph = deepcopy(dcr_template)
-        self.logAbstraction = {
-            'events': set(),
-            'traces': [[]],
-            'atMostOnce': set(),
-            'chainPrecedenceFor': {},
-            'precedenceFor': {},
-            'predecessor': {},
-            'responseTo': {},
-            'successor': {}
-        }
+        self.oracle = deepcopy(dcr_template)
+        self.oracle_iter = None
+        self.events = None,
+        self.positive = None,
+        self.negative = None,
 
-    def mine(self, log: Union[EventLog, pd.DataFrame], findAdditionalConditions=True, parameters=None) -> Tuple[DcrGraph,Dict[str, Any]]:
+    def mine(self, log: pd.DataFrame, parameters=None) -> DcrGraph:
         """
         Method used for calling the underlying mining algorithm used for discovery of DCR Graphs
 
@@ -109,8 +61,6 @@ class Rejection:
         ----------
         log
             an event log as EventLog or pandas.DataFrame
-        findAdditionalConditions
-            Condition for mining additional condition: True (default) or False
 
         parameters
                 activity_key: optional parameter, used to identify the activities in the log
@@ -123,449 +73,154 @@ class Rejection:
             - The DCR Graph
             - The log abstraction used for mining
         """
-        activity_key = exec_utils.get_param_value(Parameters.ACTIVITY_KEY, parameters, xes_constants.DEFAULT_NAME_KEY)
-        case_id_key = exec_utils.get_param_value(Parameters.CASE_ID_KEY, parameters, constants.CASE_CONCEPT_NAME)
-        self.createLogAbstraction(log, activity_key, case_id_key)
-        self.mineFromAbstraction(findAdditionalConditions=findAdditionalConditions)
-        return DcrGraph(self.graph), self.logAbstraction
+        self.init(log, parameters)
+        self.minimize(MinimizeObjective.Naive)
+        self.minimize(MinimizeObjective.Greedy)
+        return DcrGraph(self.graph)
 
-    def createLogAbstraction(self, log: List[EventLog | pd.DataFrame], activity_key: str, case_key: str) -> int:
-        """
-        Performs the mining of abstraction log, will map event log onto a selection of DECLARE templates.
+    def init(self, log, parameters):
+        activity_key = parameters['activity_key'] 
+        case_id_key = parameters['case_id_key'] 
+        label_key = parameters['label_key']
+        positive_label = parameters['positive_label']
+        negative_label = parameters['negative_label']
+        seed = parameters['seed']
 
-        Parameters
-        ----------
-        log : EventLog | pd.DataFrame
-            The event log to be abstracted.
-        activity_key : str
-            The attribute key used to identify the activities recorded in the log.
-        case_key : str
-            The attribute key used to identify the cases recorded in the log.
+        self.events = set(get_event_attribute_values(log, activity_key))
 
-        Returns
-        -------
-        int
-            Returns 0 for success, and any other value for failure.
-        """
-        # initiate the activities, in DisCoveR, activities and event id is mapped bijectively
-        activities = get_event_attribute_values(log, activity_key)
-        events = set(activities)
+        # Extract positive and negative traces from dataframe
+        # Positive and negative are dicts of the form {trace id: [event 0, ... event n]} 
+        positive = log[log[label_key] == positive_label]
+        self.positive = positive.groupby(case_id_key)[activity_key].apply(list).to_dict()
+        negative = log[log[label_key] == negative_label]
+        self.negative = negative.groupby(case_id_key)[activity_key].apply(list).to_dict()
 
-        # load events in to log abstraction
-        self.logAbstraction['events'] = events.copy()
-        log = pm4py.project_on_event_attribute(log, case_id_key=case_key)
+        # Make flower model
+        self.graph['marking']['included'] = deepcopy(self.events)
+        self.graph['events'] = deepcopy(self.events)
+        self.graph['labels'] = self.graph['events']
+        self.graph['labelMapping'] = {event: event for event in self.graph['events']}
 
-        # flatten the event log, all traces are equally significant
-        traces = set(tuple(i) for i in log)
-        traces = [list(i) for i in traces]
+        # Create oracle
+        self.oracle['marking']['included'] = deepcopy(self.events)
 
-        self.logAbstraction['traces'] = traces
-        self.logAbstraction['atMostOnce'] = events.copy()
-        for event in events:
-            self.logAbstraction['chainPrecedenceFor'][event] = events.copy() - set([event])
-            self.logAbstraction['precedenceFor'][event] = events.copy() - set([event])
-            self.logAbstraction['predecessor'][event] = set()
-            self.logAbstraction['responseTo'][event] = events.copy() - set([event])
-            self.logAbstraction['successor'][event] = set()
-        for trace in self.logAbstraction['traces']:
-            self.parseTrace(trace)
+        # Techincally oracle relations response and exclude should be inverted,
+        # but since oracle covers all relations, they are identical to their inverse.
+        relations = {event: self.events - set(event) for event in self.events}
+        relations_self = {event: self.events for event in self.events}
+        self.oracle['conditionsFor'] = relations
+        self.oracle['responseTo'] = relations
+        self.oracle['excludesTo'] = relations_self
 
-        for i in self.logAbstraction['predecessor']:
-            for j in self.logAbstraction['predecessor'][i]:
-                self.logAbstraction['successor'][j].add(i)
-        return 0
+        # Oracle iter is a list of all individual relation tuples
+        # Each tuple is of the form (relation_type, (event_from, event_to))
+        relations_iter = [(a, b) for a in self.events for b in self.events if a != b]
+        relations_self_iter = [(a, b) for a in self.events for b in self.events]
+        self.oracle_iter = (
+            [('conditionsFor', x) for x in relations_iter] + 
+            [('responseTo', x) for x in relations_iter] + 
+            [('excludesTo', x) for x in relations_self_iter]
+        )
+        random.Random(seed).shuffle(self.oracle_iter)
 
-    def parseTrace(self, trace: List[str]) -> int:
-        """
-        Parses a trace to mine DEClARE constraints.
+    def execute(self, graph, marking, event):
+        # Current event was just executed
+        marking['executed'].add(event)
+        marking['pending'].discard(event)
 
-        Parameters
-        ----------
-        trace : List[str]
-            A list representing a trace, where each element is an event, and the order of events is maintained.
+        # Update markings of all events that were affected by current event
+        marking['pending'] |= graph['responseTo'].get(event, set())
+        marking['included'] -= graph['excludesTo'].get(event, set())
+        marking['included'] |= graph['includesTo'].get(event, set())
 
-        Returns
-        -------
-        int
-            Returns 0 on success, and any other value on failure.
+    def update_mappings(self, event, exe_since_inc, exe_since_exe):
+        # Clear all exSiIn events that were just included by current event
+        for other in self.graph['includesTo'].get(event, set()):
+            exe_since_inc[other] = set()
 
-        Notes
-        -----
-        This method performs the following key steps:
-        - Identifies and updates predecessor relationships for each event in the trace.
-        - Updates 'atMostOnce', 'precedenceFor', and 'chainPrecedenceFor' sets in the log abstraction based on the trace events.
-        - Computes and updates 'responseTo' sets in the log abstraction based on the events seen before and after each event in the trace.
-        """
-        localAtLeastOnce = set()
-        localSeenOnlyBefore = {}
-        lastEvent = ''
-        for event in trace:
-            # All events seen before this one must be predecessors
-            self.logAbstraction['predecessor'][event] = self.logAbstraction['predecessor'].get(event).union(
-                localAtLeastOnce)
-            # If event seen before in trace, remove from atMostOnce
-            if event in localAtLeastOnce:
-                self.logAbstraction['atMostOnce'].discard(event)
-            localAtLeastOnce.add(event)
-            # Precedence for (event): All events that occurred before (event) are kept in the precedenceFor set
-            self.logAbstraction['precedenceFor'][event] = self.logAbstraction['precedenceFor'][event].intersection(
-                localAtLeastOnce)
-            # Chain-Precedence for (event): Some event must occur immediately before (event) in all traces
-            if lastEvent != '':  # TODO: objects vs strings in sets
-                # If first time this clause is encountered - leaves lastEvent in chain-precedence set.
-                # The intersect is empty if this clause is encountered again with another lastEvent.
-                self.logAbstraction['chainPrecedenceFor'][event] = self.logAbstraction['chainPrecedenceFor'][
-                    event].intersection(set([lastEvent]))
+        # Add current event to all previous executed exSiEx events 
+        # Add current event to all previous included exSiIn events 
+        for other in self.events:
+            exe_since_exe.setdefault(other, set()).add(event)
+            exe_since_inc.setdefault(other, set()).add(event)
+
+        # Clear current exSiEx event, since it was just executed 
+        exe_since_exe[event] = set()
+
+    def trace_rejection(self, traces):
+        # responseTo and excludesTo are inverted.
+        # the naming is just kept consistent for simpler code
+        rejections = {
+            'conditionsFor': {},
+            'responseTo': {},
+            'excludesTo': {},
+        }
+
+        for id, trace in traces.items():
+            gm = deepcopy(self.graph['marking'])
+            om = deepcopy(self.oracle['marking'])
+
+            exe_since_inc = {}
+            exe_since_exe = {}
+            for event in trace:
+                self.execute(self.graph, gm, event)
+                self.execute(self.oracle, om, event)
+
+                relation = self.oracle['conditionsFor'][event] & (gm['included'] - gm['executed'])
+                for other in relation:
+                    rejections['conditionsFor'].setdefault((event, other), set()).add(id)
+
+                if event not in om['included']:
+                    relation = self.oracle['excludesTo'][event] & exe_since_inc.get(event, set())
+                    for other in relation:
+                        rejections['excludesTo'].setdefault((other, event), set()).add(id)
+                
+                self.update_mappings(event, exe_since_inc, exe_since_exe)
+            
+            for event in gm['included'] & om['pending']:
+                relation = self.oracle['responseTo'][event] & exe_since_exe.get(event, set())
+                for other in relation:
+                    rejections['responseTo'].setdefault((other, event), set()).add(id)
+
+        return rejections
+
+    def minimize(self, objective):
+        while self.negative:
+            pos_rejects = self.trace_rejection(self.positive)
+            get_pos = lambda x: pos_rejects[x[0]].get(x[1], set())
+            len_pos = lambda x: len(get_pos(x))
+
+            neg_rejects = self.trace_rejection(self.negative)
+            get_neg = lambda x: neg_rejects[x[0]].get(x[1], set())
+            len_neg = lambda x: len(get_neg(x))
+
+            if objective == MinimizeObjective.Naive:
+                # Only consider relations that reject no positive traces
+                # Choose the single relation that rejects the most negative traces
+                best = max(
+                    filter(lambda x: not get_pos(x), self.oracle_iter), 
+                    key=len_neg,
+                    default=None
+                )
+                if best is None: break
+                if not get_neg(best): break
+            elif objective == MinimizeObjective.Greedy:
+                # Choose the single relation that rejects relatively 
+                # the most negative traces and the fewest positive traces
+                best = max(
+                    self.oracle_iter, 
+                    key=lambda x: len_neg(x) - len_pos(x),
+                    default=None
+                )
+                if best is None: break
+                if len_pos(best) >= len_neg(best): break
             else:
-                # First event in a trace, and chainPrecedence is therefore not possible
-                self.logAbstraction['chainPrecedenceFor'][event] = set()
-            # To later compute responses we note which events were seen before (event) and not after
-            if len(self.logAbstraction['responseTo'][event]) > 0:
-                # Save all events seen before (event)
-                localSeenOnlyBefore[event] = localAtLeastOnce.copy()
-
-            # Clear (event) from all localSeenOnlyBefore, since (event) has now occurred after
-            for key in localSeenOnlyBefore:
-                localSeenOnlyBefore[key].discard(event)
-            lastEvent = event
-        for event in localSeenOnlyBefore:
-            # Compute set of events in trace that happened after (event)
-            seenOnlyAfter = localAtLeastOnce.difference(localSeenOnlyBefore[event])
-            # Delete self-relation
-            seenOnlyAfter.discard(event)
-            # Set of events that always happens after (event)
-            self.logAbstraction['responseTo'][event] = self.logAbstraction['responseTo'][event].intersection(
-                seenOnlyAfter)
-        return 0
-
-    def optimizeRelation(self, relation: Dict[str, Set[str]]) -> Dict[str, Set[str]]:
-        """
-        Optimizes a given relation by removing redundant connections based on transitive closure.
-
-        For instance, if there are relations A -> B, B -> C, then an existing relation A -> C can be removed
-        as it is implied by the transitive nature of the other relations.
-
-        Parameters
-        ----------
-        relation : Dict[str, Set[str]]
-            A dictionary representing a relation, where keys are starting points and values are sets of endpoints.
-
-        Returns
-        -------
-        Dict[str, Set[str]]
-            An optimized version of the input relations, with redundant connections removed.
-        """
-        # Sorted dict to avoid possibly non-deterministic behavior due to unordered nature of dict
-        relation = dict(sorted(relation.items(), key=lambda conditions: len(conditions[1]),reverse=True))
-        for eventA in relation:
-            for eventB in relation[eventA]:
-                relation[eventA] = relation[eventA].difference(relation[eventB])
-        return relation
-
-    def mineFromAbstraction2(self, findAdditionalConditions: bool = True) -> int:
-        """
-        Mines DCR constraints based on the DECLARE templates stored in the log abstraction.
-
-        This method initializes a graph and mines conditions, responses, self-exclusions, and additional conditions
-        (if specified) from the user. It also optimizes the relations by removing redundant relations based
-        on transitive closure.
-
-        Parameters
-        ----------
-        findAdditionalConditions : bool, optional
-            Specifies whether to mine additional conditions. Default is True.
-
-        Returns
-        -------
-        int
-            Returns 0 if successful, anything else for failure.
-        """
-        # Initialize graph
-        # Note that events become an alias, but this is irrelevant since events are never altered
-        self.graph['events'] = self.logAbstraction['events'].copy()
-
-        #insert labels and label mapping, used for bijective label mapping
-        self.graph['labels'] = deepcopy(self.graph['events'])
-
-        # All events are initially included
-        self.graph['marking']['included'] = self.logAbstraction['events'].copy()
-
-        # Initialize all to_petri_net to avoid indexing errors
-        for event in self.graph['events']:
-            self.graph['labelMapping'][event] = event #{event}
-            self.graph['conditionsFor'][event] = set()
-            self.graph['excludesTo'][event] = set()
-            self.graph['includesTo'][event] = set()
-            self.graph['responseTo'][event] = set()
-
-
-        # Mine conditions from logAbstraction
-        self.graph['conditionsFor'] = deepcopy(self.logAbstraction['precedenceFor'])
-        # remove redundant conditions
-        self.graph['conditionsFor'] = self.optimizeRelation(self.graph['conditionsFor'])
-        # Mine responses from logAbstraction
-        self.graph['responseTo'] = deepcopy(self.logAbstraction['responseTo'])
-        # Remove redundant responses
-        self.graph['responseTo'] = self.optimizeRelation(self.graph['responseTo'])
-
-        # Mine self-exclusions
-        for event in self.logAbstraction['responseTo']:
-            if event in self.logAbstraction['atMostOnce']:
-                self.graph['excludesTo'][event].add(event)
-
-        # For each chainprecedence(i,j) we add: include(i,j) exclude(j,j)
-        for j in self.logAbstraction['chainPrecedenceFor']:
-            for i in self.logAbstraction['chainPrecedenceFor'][j]:
-                if j not in self.logAbstraction['atMostOnce']: # new addition to prevent adding unnecessary includes
-                    self.graph['includesTo'][i].add(j)
-                self.graph['excludesTo'][j].add(j)
-
-        # Additional excludes based on predecessors / successors
-        for event in self.logAbstraction['events']:
-            # Union of predecessor and successors sets, i.e. all events occuring in the same trace as event
-            coExisters = self.logAbstraction['predecessor'][event].union(self.logAbstraction['successor'][event])
-            nonCoExisters = self.logAbstraction['events'].difference(coExisters)
-            nonCoExisters.discard(event)
-            # Note that if events i & j do not co-exist, they should exclude each other.
-            # Here we only add i -->% j, but on the iteration for j, j -->% i will be added.
-            self.graph['excludesTo'][event] = self.graph['excludesTo'][event].union(nonCoExisters)
-
-            # if s precedes (event) but never succeeds (event) add (event) -->% s if s -->% s does not exist
-            precedesButNeverSucceeds = self.logAbstraction['predecessor'][event].difference(
-                self.logAbstraction['successor'][event])
-            for s in precedesButNeverSucceeds:
-                if not s in self.graph['excludesTo'][s]:
-                    self.graph['excludesTo'][event].add(s)
-
-        # Removing redundant excludes.
-        # If r always precedes s, and r -->% t, then s -->% t is (mostly) redundant
-        for s in self.logAbstraction['precedenceFor']:
-            for r in self.logAbstraction['precedenceFor'][s]:
-                for t in self.graph['excludesTo'][r]:
-                    self.graph['excludesTo'][s].discard(t)
-
-        if findAdditionalConditions:
-            """
-            Mining additional conditions:
-            Every event, x, that occurs before some event, y, is a possible candidate for a condition x -->* y
-            This is due to the fact, that in the traces where x does not occur before y, x might be excluded
-            """
-            possibleConditions = deepcopy(self.logAbstraction['predecessor'])
-            # Replay entire log, filtering out any invalid conditions
-            for trace in self.logAbstraction['traces']:
-                localSeenBefore = set()
-                included = self.logAbstraction['events'].copy()
-                for event in trace:
-                    # Compute conditions that still allow event to be executed
-                    excluded = self.logAbstraction['events'].difference(included)
-                    validConditions = localSeenBefore.union(excluded)
-                    # Only keep valid conditions
-                    possibleConditions[event] = possibleConditions[event].intersection(validConditions)
-                    # Execute excludes starting from (event)
-                    included = included.difference(self.graph['excludesTo'][event])
-                    # Execute includes starting from (event)
-                    included = included.union(self.graph['includesTo'][event])
-                    localSeenBefore.add(event)
-
-            # Now the only possible Condtitions that remain are valid for all traces
-            # These are therefore added to the graph
-            for key in self.graph['conditionsFor']:
-                self.graph['conditionsFor'][key] = self.graph['conditionsFor'][key].union(possibleConditions[key])
-
-            # Removing redundant conditions
-            self.graph['conditionsFor'] = self.optimizeRelation(self.graph['conditionsFor'])
-        self.clean_empty_sets()
-        return 0
-
-    def mineFromAbstraction(self, findAdditionalConditions: bool = True) -> int:
-        """
-        Retrofits the mineFromAbstraction method to use the DCR Rejection Miner algorithm.
-
-        Parameters
-        ----------
-        findAdditionalConditions : bool, optional
-            Specifies whether to mine additional conditions. Default is True.
-
-        Returns
-        -------
-        int
-            Returns 0 if successful, anything else for failure.
-        """
-        # Initialize graph
-        self.graph['events'] = self.logAbstraction['events'].copy()
-        self.graph['labels'] = deepcopy(self.graph['events'])
-        self.graph['marking']['included'] = self.logAbstraction['events'].copy()
-
-        for event in self.graph['events']:
-            self.graph['labelMapping'][event] = event
-            self.graph['conditionsFor'][event] = set()
-            self.graph['excludesTo'][event] = set()
-            self.graph['includesTo'][event] = set()
-            self.graph['responseTo'][event] = set()
-
-        # STEP 1: Generate candidate patterns (Pattern Oracle)
-        candidate_patterns = self.generate_candidate_patterns()
-
-        # STEP 2: Validate candidate patterns against positive traces
-        valid_patterns = []
-        for pattern in candidate_patterns:
-            if self.validate_pattern(pattern, self.logAbstraction['traces']):
-                valid_patterns.append(pattern)
-
-        # STEP 3: Minimize patterns (Minimizer)
-        minimized_patterns = self.minimize_patterns(valid_patterns, self.logAbstraction['traces'])
-
-        # STEP 4: Apply minimized patterns to the DCR graph
-        self.apply_patterns_to_graph(minimized_patterns)
-
-        # Clean empty sets and optimize
-        self.clean_empty_sets()
-        return 0
-
-    def simulate_trace(self, graph: Dict[str, Any], trace: List[str]) -> bool:
-        """
-        Simulates a trace on the given DCR graph and checks if the trace is accepted.
-
-        Parameters
-        ----------
-        graph : Dict[str, Any]
-            The DCR graph to simulate the trace on.
-        trace : List[str]
-            The trace (sequence of events) to simulate.
-
-        Returns
-        -------
-        bool
-            True if the trace is accepted by the graph, False otherwise.
-        """
-        # Create a copy of the graph's marking for simulation
-        included = set(graph['marking']['included'])
-        executed = set()
-        pending = set()
-
-        for event in trace:
-            # Check if the event is included and all its conditions are satisfied
-            if event not in included or any(pre_event not in executed for pre_event in graph['conditionsFor'][event]):
-                return False  # Event is not enabled, trace is rejected
-
-            # Execute the event
-            executed.add(event)
-
-            # Update pending responses
-            pending = pending.difference({event})  # Mark the current event as no longer pending
-            pending.update(graph['responseTo'][event])  # Add all responses for the event
-
-            # Update includes and excludes
-            included.difference_update(graph['excludesTo'][event])  # Remove excluded events
-            included.update(graph['includesTo'][event])  # Add included events
-
-        # Final check: graph must be in an accepting state (no pending responses)
-        return not pending
-
-
-    def generate_candidate_patterns(self) -> List[Tuple[str, str, str]]:
-        """
-        Generates candidate DCR relations as patterns for rejection mining.
-
-        Returns
-        -------
-        List[Tuple[str, str, str]]
-            List of candidate relations (e.g., conditions, responses, exclusions).
-        """
-        patterns = []
-        events = self.logAbstraction['events']
-        for event in events:
-            for other_event in events:
-                if event != other_event:
-                    # Generate all possible DCR relations
-                    patterns.append(("condition", event, other_event))
-                    patterns.append(("response", event, other_event))
-                    patterns.append(("exclusion", event, other_event))
-        return patterns
-
-
-    def minimize_patterns(self, patterns: List[Tuple[str, str, str]], traces: List[List[str]]) -> List[Tuple[str, str, str]]:
-        """
-        Minimizes the set of patterns by removing redundant ones.
-
-        Parameters
-        ----------
-        patterns : List[Tuple[str, str, str]]
-            List of candidate patterns.
-        traces : List[List[str]]
-            List of negative traces.
-
-        Returns
-        -------
-        List[Tuple[str, str, str]]
-            The minimized set of patterns.
-        """
-        minimized = []
-        temp_graph = deepcopy(self.graph)
-
-        for pattern in patterns:
-            temp_graph['conditionsFor' if pattern[0] == "condition" else
-                    'responseTo' if pattern[0] == "response" else
-                    'excludesTo'][pattern[1]].add(pattern[2])
-
-            # Check if pattern is necessary for rejecting negative traces
-            if any(not self.simulate_trace(temp_graph, trace) for trace in traces):
-                minimized.append(pattern)
-            else:
-                # Remove unnecessary pattern
-                temp_graph['conditionsFor' if pattern[0] == "condition" else
-                        'responseTo' if pattern[0] == "response" else
-                        'excludesTo'][pattern[1]].remove(pattern[2])
-        return minimized
-
-
-    def validate_pattern(self, pattern: Tuple[str, str, str], positive_traces: List[List[str]]) -> bool:
-        """
-        Validates if a pattern is compatible with all positive traces.
-
-        Parameters
-        ----------
-        pattern : Tuple[str, str, str]
-            The DCR relation to validate.
-        positive_traces : List[List[str]]
-            List of positive traces.
-
-        Returns
-        -------
-        bool
-            True if the pattern is valid for all positive traces, False otherwise.
-        """
-        temp_graph = deepcopy(self.graph)
-        temp_graph['conditionsFor' if pattern[0] == "condition" else
-                'responseTo' if pattern[0] == "response" else
-                'excludesTo'][pattern[1]].add(pattern[2])
-        
-        for trace in positive_traces:
-            if not self.simulate_trace(temp_graph, trace):
-                return False
-        return True
-
-
-    def apply_patterns_to_graph(self, patterns: List[Tuple[str, str, str]]):
-        """
-        Adds the validated and minimized patterns to the DCR graph.
-
-        Parameters
-        ----------
-        patterns : List[Tuple[str, str, str]]
-            List of valid DCR relations to apply to the graph.
-        """
-        #print(patterns)
-        for pattern in patterns:
-            self.graph['conditionsFor' if pattern[0] == "condition" else
-                    'responseTo' if pattern[0] == "response" else
-                    'excludesTo'][pattern[1]].add(pattern[2])
-
-    def clean_empty_sets(self):
-        for k, v in deepcopy(self.graph).items():
-            if k in ['conditionsFor', 'responseTo', 'excludesTo', 'includesTo']:
-                v_new = {}
-                for k2, v2 in v.items():
-                    if v2:
-                        v_new[k2] = set([v3 for v3 in v2 if v3 is not set()])
-                self.graph[k] = v_new
+                raise ValueError("Unknown MinimizeObjective variant")
+                
+            # A relation worked
+            type, (event, other) = best
+            self.graph[type].setdefault(deepcopy(event), set()).add(deepcopy(other))
+            keep_pos = set(self.positive.keys()) - get_pos(best)
+            keep_neg = set(self.negative.keys()) - get_neg(best)
+            self.positive = {id: self.positive[id] for id in keep_pos}
+            self.negative = {id: self.negative[id] for id in keep_neg}
